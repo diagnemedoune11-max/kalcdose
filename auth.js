@@ -1,5 +1,5 @@
 // ============================================================
-// KalcDose — Système d'activation (Firebase + Cookie)
+// KalcDose — Système d'activation (Firebase + Cookie + Offline)
 // ============================================================
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
@@ -18,7 +18,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// ── Utilitaires Cookie (persistent même en PWA) ──────────────
+// ── Cookies (persistent PWA iPhone + Android) ───────────────
 function setCookie(name, value, days = 3650) {
   const d = new Date();
   d.setTime(d.getTime() + days * 24 * 60 * 60 * 1000);
@@ -30,40 +30,52 @@ function getCookie(name) {
   return match ? match[2] : null;
 }
 
-// ── Identifiant unique de l'appareil ────────────────────────
+// ── Sauvegarde multi-support ─────────────────────────────────
+function saveData(key, value) {
+  setCookie(key, value);
+  try { localStorage.setItem(key, value); } catch(e){}
+  try { sessionStorage.setItem(key, value); } catch(e){}
+}
+
+function loadData(key) {
+  return getCookie(key) ||
+    (()=>{ try { return localStorage.getItem(key); } catch(e){ return null; } })() ||
+    (()=>{ try { return sessionStorage.getItem(key); } catch(e){ return null; } })();
+}
+
+// ── Device ID ────────────────────────────────────────────────
 function getDeviceId() {
-  let id = getCookie("kalcdose_device_id");
+  let id = loadData("kalcdose_device_id");
   if (!id) {
     id = "dev_" + Math.random().toString(36).substr(2, 16) + Date.now();
-    setCookie("kalcdose_device_id", id);
+    saveData("kalcdose_device_id", id);
   }
-  // Sync avec localStorage aussi
-  try { localStorage.setItem("kalcdose_device_id", id); } catch(e){}
   return id;
 }
 
-function getSavedCode() {
-  return getCookie("kalcdose_code") || 
-         (()=>{ try { return localStorage.getItem("kalcdose_code"); } catch(e){ return null; } })();
-}
-
-function saveCode(code) {
-  setCookie("kalcdose_code", code);
-  try { localStorage.setItem("kalcdose_code", code); } catch(e){}
-}
-
-// ── Vérifier si l'appareil est activé ───────────────────────
+// ── Vérifier activation ──────────────────────────────────────
 export async function checkActivation() {
   const deviceId = getDeviceId();
-  const savedCode = getSavedCode();
+  const savedCode = loadData("kalcdose_code");
+  const isActivated = loadData("kalcdose_activated");
+
+  // Si activation locale confirmée → accès direct (hors-ligne)
+  if (savedCode && isActivated === "true") {
+    return true;
+  }
+
   if (!savedCode) return false;
+
+  // Vérifier en ligne
   try {
     const snap = await get(ref(db, `codes/${savedCode}`));
     if (!snap.exists()) return false;
     const data = snap.val();
-    return data.activated && data.deviceId === deviceId && data.active !== false;
+    const ok = data.activated && data.deviceId === deviceId && data.active !== false;
+    if (ok) saveData("kalcdose_activated", "true");
+    return ok;
   } catch (e) {
-    // Si pas de connexion mais code sauvegardé → autoriser (mode hors-ligne)
+    // Hors-ligne : si code sauvegardé → autoriser
     return savedCode !== null;
   }
 }
@@ -83,14 +95,15 @@ export async function activateCode(code) {
     if (data.activated && data.deviceId !== deviceId) {
       return { success: false, message: "Ce code est déjà utilisé sur un autre appareil." };
     }
-    // Activer
     await update(ref(db, `codes/${code}`), {
       activated: true,
       deviceId: deviceId,
       activatedAt: new Date().toISOString(),
       active: true
     });
-    saveCode(code);
+    // Sauvegarder localement
+    saveData("kalcdose_code", code);
+    saveData("kalcdose_activated", "true");
     return { success: true, message: "Activation réussie !" };
   } catch (e) {
     return { success: false, message: "Erreur de connexion. Vérifiez votre internet." };

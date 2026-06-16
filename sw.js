@@ -1,9 +1,11 @@
 // KalcDose — Service Worker (mise en cache hors-ligne)
-const CACHE_NAME = "kalcdose-v1";
+const CACHE_NAME = "kalcdose-v3";
 const ASSETS = [
   "./index.html",
+  "./login.html",
   "./style.css",
   "./app.js",
+  "./auth.js",
   "./meds.js",
   "./manifest.json",
   "./icons/icon-192.png",
@@ -28,11 +30,24 @@ self.addEventListener("activate", e => {
   self.clients.claim();
 });
 
-// Fetch : cache-first (fonctionne hors-ligne)
+// Fetch : network first pour auth, cache first pour le reste
 self.addEventListener("fetch", e => {
+  // Pour Firebase — toujours réseau
+  if (e.request.url.includes("firebaseio.com") || 
+      e.request.url.includes("googleapis.com") ||
+      e.request.url.includes("gstatic.com")) {
+    e.respondWith(fetch(e.request).catch(() => new Response("{}", {headers: {"Content-Type": "application/json"}})));
+    return;
+  }
+  // Pour les fichiers locaux — cache first
   e.respondWith(
     caches.match(e.request).then(cached => {
-      return cached || fetch(e.request).catch(() => caches.match("./index.html"));
-    })
+      return cached || fetch(e.request).then(response => {
+        return caches.open(CACHE_NAME).then(cache => {
+          cache.put(e.request, response.clone());
+          return response;
+        });
+      });
+    }).catch(() => caches.match("./index.html"))
   );
 });
